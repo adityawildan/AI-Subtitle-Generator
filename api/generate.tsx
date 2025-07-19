@@ -1,12 +1,31 @@
 // Using esm.sh for imports to avoid needing a package.json in this simple setup.
 import { GoogleGenAI, Type } from "https://esm.sh/@google/genai@^1.10.0";
+import { del } from 'https://esm.sh/@vercel/blob@^1.1.1/';
 
 // This is the serverless function runtime configuration.
 // Edge is fast and cost-effective.
 export const config = {
   runtime: 'edge',
-  maxDuration: 60, // Allow up to 60 seconds for transcription
+  maxDuration: 300, // Increase duration for downloading and processing larger files
 };
+
+// Helper function to fetch a file and convert it to Base64
+const urlToGenerativePart = async (url: string, mimeType: string) => {
+    const response = await fetch(url);
+    if (!response.ok) {
+        throw new Error(`Failed to fetch file from URL: ${url}`);
+    }
+    const buffer = await response.arrayBuffer();
+    // Buffer is available in the Vercel Edge Runtime
+    const data = Buffer.from(buffer).toString('base64');
+    return {
+      inlineData: {
+        mimeType,
+        data,
+      },
+    };
+};
+
 
 // Main handler for the serverless function.
 export default async function handler(request: Request) {
@@ -25,11 +44,17 @@ export default async function handler(request: Request) {
     });
   }
 
-  try {
-    const { mimeType, data } = await request.json();
+  let downloadUrl: string | undefined;
 
-    if (!mimeType || !data) {
-        return new Response(JSON.stringify({ error: "Missing mimeType or data in request body." }), { 
+  try {
+    // The request now contains the URL of the file in Vercel Blob storage.
+    const body = await request.json();
+    const { mimeType } = body;
+    downloadUrl = body.downloadUrl;
+
+
+    if (!mimeType || !downloadUrl) {
+        return new Response(JSON.stringify({ error: "Missing mimeType or downloadUrl in request body." }), { 
             status: 400,
             headers: { 'Content-Type': 'application/json' }
         });
@@ -38,12 +63,8 @@ export default async function handler(request: Request) {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const model = 'gemini-2.5-flash';
 
-    const audioPart = {
-      inlineData: {
-        mimeType: mimeType,
-        data: data,
-      },
-    };
+    // Fetch the file from the blob store and prepare it for the Gemini API
+    const audioPart = await urlToGenerativePart(downloadUrl, mimeType);
     
     const prompt = `You are an expert audio transcriptionist specializing in creating readable subtitles. Your task is to transcribe the provided audio file with extreme accuracy and format it into subtitle segments.
 
@@ -86,7 +107,6 @@ export default async function handler(request: Request) {
     
     const jsonText = response.text.trim();
     // It's already JSON from the model, so we can pass it through.
-    // No need to parse and re-stringify if the model returns valid JSON string.
     return new Response(jsonText, {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -99,5 +119,14 @@ export default async function handler(request: Request) {
         status: 500,
         headers: { 'Content-Type': 'application/json' }
     });
+  } finally {
+    // This block runs whether the try block succeeds or fails.
+    if (downloadUrl) {
+      // Fire-and-forget deletion. Don't let cleanup slow down the user's response.
+      // We add a .catch to handle potential errors during deletion without crashing the function.
+      del(downloadUrl).catch((delError) => {
+          console.error("Failed to delete blob:", delError);
+      });
+    }
   }
 }
