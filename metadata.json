@@ -1,5 +1,5 @@
 {
-  "name": "Copy of AI Subtitle Generator (to deploy)",
+  "name": "AI Subtitle Generator (to deploy)",
   "description": "Generate subtitles from your audio or video files using AI. Export in .srt format, ready for video editing software like Premiere Pro or After Effects.",
   "requestFramePermissions": [],
   "prompt": ""
